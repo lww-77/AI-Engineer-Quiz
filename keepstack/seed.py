@@ -129,6 +129,39 @@ def run_seed() -> None:
                          (target, aid, now_iso()))
     conn.commit()
 
+    # Make the assignment's acceptance scenario reproducible in a fresh seed:
+    # both harbor assets are approved campaign material in Environment &
+    # Survey, while one is internal and must be excluded by the sample query.
+    harbor_assets = conn.execute(
+        """SELECT a.id FROM assets a
+           JOIN asset_tags at ON at.asset_id = a.id
+           JOIN tags t ON t.id = at.tag_id
+           WHERE t.name = 'coast' ORDER BY a.id LIMIT 2"""
+    ).fetchall()
+    for index, row in enumerate(harbor_assets):
+        conn.execute(
+            "UPDATE assets SET title = ?, description = ?, updated_at = ? WHERE id = ?",
+            (
+                f"Harbor campaign photo {index + 1}",
+                "Approved harbor campaign material for the coastal survey.",
+                now_iso(),
+                row["id"],
+            ),
+        )
+        scenario_tags = ["approved", "campaign"] + (["internal"] if index == 1 else [])
+        for tag_name in scenario_tags:
+            conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag_name,))
+            tag_id = conn.execute(
+                "SELECT id FROM tags WHERE name = ?", (tag_name,)
+            ).fetchone()["id"]
+            conn.execute(
+                "INSERT OR IGNORE INTO asset_tags (asset_id, tag_id, source) VALUES (?, ?, 'manual')",
+                (row["id"], tag_id),
+            )
+        conn.commit()
+        ingest.reindex_fts(row["id"])
+        ingest.reindex_embedding(row["id"])
+
     print(f"Seeded {len(created)} assets, {len(cols)} collections, and demo users.")
     print("Sign in as admin/admin (also: curator, contributor, viewer / demo1234).")
 
