@@ -6,6 +6,7 @@ single-page web client is served from the ``web/`` directory at the root.
 """
 from __future__ import annotations
 
+import csv
 import io
 import ipaddress
 import json
@@ -178,16 +179,71 @@ def list_assets(
     q: str = "",
     media_type: Optional[str] = None,
     tag: Optional[str] = None,
+    include_tag: list[str] = Query(default=[]),
+    exclude_tag: list[str] = Query(default=[]),
     collection_id: Optional[int] = None,
-    status: str = "active",
-    sort: str = "newest",
+    sort: str = Query("created_desc", pattern="^(created_desc|created_asc)$"),
     mode: str = "keyword",
-    limit: int = Query(60, le=200),
-    offset: int = 0,
+    limit: int = Query(24, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     user: dict = Depends(require_user),
 ):
-    return search.search(q=q, media_type=media_type, tag=tag, collection_id=collection_id,
-                         status=status, sort=sort, mode=mode, limit=limit, offset=offset)
+    return search.search(
+        q=q,
+        media_type=media_type,
+        tag=tag,
+        include_tags=include_tag,
+        exclude_tags=exclude_tag,
+        collection_id=collection_id,
+        status="active",
+        sort=sort,
+        mode=mode,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@app.get("/api/assets/export.csv")
+def export_assets_csv(
+    q: str = "",
+    media_type: Optional[str] = None,
+    include_tag: list[str] = Query(default=[]),
+    exclude_tag: list[str] = Query(default=[]),
+    collection_id: Optional[int] = None,
+    sort: str = Query("created_desc", pattern="^(created_desc|created_asc)$"),
+    user: dict = Depends(require_user),
+):
+    """Export every asset matching the current keyword filters and sort."""
+    assets = search.all_matching_assets(
+        q=q,
+        media_type=media_type,
+        include_tags=include_tag,
+        exclude_tags=exclude_tag,
+        collection_id=collection_id,
+        sort=sort,
+    )
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    fields = [
+        "uuid",
+        "title",
+        "description",
+        "filename",
+        "media_type",
+        "tags",
+        "created_at",
+    ]
+    writer.writerow(fields)
+    for asset in assets:
+        writer.writerow([asset.get(field) or "" for field in fields])
+
+    # A UTF-8 BOM makes Chinese content open correctly in common spreadsheet
+    # programs while remaining valid UTF-8 for standards-compliant readers.
+    return Response(
+        content="\ufeff" + output.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="keepstack-assets.csv"'},
+    )
 
 
 def _get_asset_or_404(uuid: str) -> dict:
@@ -315,6 +371,7 @@ def remove_tag(uuid: str, name: str, user: dict = Depends(require_role("contribu
             "DELETE FROM asset_tags WHERE asset_id = ? AND tag_id = "
             "(SELECT id FROM tags WHERE name = ?)", (a["id"], name.lower()))
     ingest.reindex_fts(a["id"])
+    ingest.reindex_embedding(a["id"])
     return {"ok": True}
 
 
